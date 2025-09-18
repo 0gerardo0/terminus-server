@@ -1,0 +1,11 @@
+# C
+*.so
+*.o
+build/
+
+# Python
+__pycache__/
+*.pyc
+
+# Virtual de Python
+venv/|
