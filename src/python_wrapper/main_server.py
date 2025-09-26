@@ -1,34 +1,83 @@
 import cffi
 import time
+import os 
 
 ffibuilder = cffi.FFI()
 ffibuilder.cdef("""
     struct MHD_Daemon;
-    struct MHD_Daemon* start_server(unsigned int port);
+    struct MHD_Connection;
+
+    typedef struct {
+        char* buffer;
+        size_t len;
+    } BytesBuffer;
+
+    BytesBuffer encrypt_message(const unsigned char* message, size_t message_len, const unsigned char* key);
+
+    BytesBuffer decrypt_message(const unsigned char* full_payload, size_t payload_len, const unsigned char* key);
+
+    void free_buffer(BytesBuffer buffer);
+    size_t get_key_bytes(void);
+
+    typedef int (*request_handler_callback)(void *cls, struct MHD_Connection *connection,
+                                            const char *url, const char *method,
+                                            const char *post_data,
+                                            size_t post_data_size);
+
+    struct MHD_Daemon* start_server(unsigned int port, request_handler_callback handler, void* cls);
     void stop_server(struct MHD_Daemon* daemon);
+
+    int send_text_response(struct MHD_Connection *connection, const char *body, unsigned int status_code);
+
 """)
 
 try:
-    C = ffibuilder.dlopen('./src/python_wrapper/libserver_core.so')
+    C = ffibuilder.dlopen('./src/python_wrapper/libterminus_core.so')
 except OSError as e:
-    print(f"Error: No se pudo cargar la biblioteca 'libserver_core.so'.\n{e}")
+    print(f"Error: No se pudo cargar la biblioteca 'libterminus_core.so'.\n{e}")
     print("Asegúrate de haber compilado el proyecto con 'bash scripts/build.sh'")
     exit(1)
 
+@ffibuilder.callback("int(void*, struct MHD_Connection*, const char*, const char*, const char*, size_t)")
+def python_request_handler(cls, connection, url, method, post_data, post_data_size):
+    method = ffibuilder.string(method)
+    url = ffibuilder.string(url)
+
+    print(f"\n [API] Petición recibida: {method.decode()} {url.decode()} con {post_data_size} bytes de datos.")
+
+    print(f"  -> DEBUG: Verificando método: {repr(method)} (Tipo: {type(method)})")
+    print(f"  -> DEBUG: Verificando URL:    {repr(url)} (Tipo: {type(url)})")
+
+    if method == b"POST" and url == b"/encrypt":
+        print("  -> DEBUG: La condición IF fue exitosa. Entrando al bloque /encrypt.")
+        if post_data_size > 0:
+            data_to_encrypt = ffibuilder.unpack(post_data, post_data_size);
+            encrypted_buffer = C.encrypt_message(data_to_encrypt, len(data_to_encrypt), app_key)
+            encrypted_hex = ffibuilder.unpack(encrypted_buffer.buffer, encrypted_buffer.len).hex()
+            C.free_buffer(encrypted_buffer)
+            return C.send_text_response(connection, encrypted_hex.encode('utf-8'), 200)
+        else:
+            return C.send_text_response(connection, b"Endpoint no encontrado.", 404)
+    print("  -> DEBUG: La condición IF falló. Devolviendo 404.")
+    return C.send_text_response(connection, b"404 Not Found", 404)
 PORT = 8080
 mhd_daemon = ffibuilder.NULL
+app_key = ffibuilder.new("unsigned char[]", os.urandom(C.get_key_bytes()))
 
 def main():
-    """Función principal que contiene el bucle interactivo."""
+
     global mhd_daemon 
+    
+    print(f"Clave de sesion generada: {bytes(app_key).hex()}")
+
     while True:
         print("\n--- Panel de Control del Servidor ---")
 
         if mhd_daemon == ffibuilder.NULL:
-            print("  [start]  - Iniciar el servidor")
+            print("  [start]  - Iniciar el servidor API")
         else:
             print("  [stop]   - Detener el servidor")
-            print(f"  (Puedes probarlo con: curl http://127.0.0.1:{PORT})")
+            print(f"  (Puedes probarlo con: curl -X POST --data 'Hola' http://127.0.0.1:{PORT}/encrypt")
 
         print("  [status] - Ver estado actual")
         print("  [exit]   - Salir")
@@ -37,7 +86,8 @@ def main():
 
         if command == "start":
             if mhd_daemon == ffibuilder.NULL:
-                mhd_daemon = C.start_server(PORT)
+                print("Iniciando servidor con el manejador de API de PYTHON")
+                mhd_daemon = C.start_server(PORT, python_request_handler, ffibuilder.NULL)
                 if mhd_daemon == ffibuilder.NULL:
                     print("ERROR: El núcleo en C falló al iniciar el servidor.")
             else:

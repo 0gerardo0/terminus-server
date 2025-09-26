@@ -3,30 +3,80 @@
 #include <stdlib.h>
 #include <string.h>
 
+typedef struct {
+  char *data;
+  size_t size;
+} PostContext;
+
+typedef enum MHD_Result (*request_handler_callback)(void *cls, struct MHD_Connection *connection,
+                                            const char *url, const char *method,
+                                            const char *post_data,
+                                            size_t post_data_size);
+
+static void request_completed_callback(void *cls, struct MHD_Connection *connection, void **con_cls,
+                                       enum MHD_RequestTerminationCode toe);
+
 static enum MHD_Result answer_to_connection(void *cls, struct MHD_Connection *connection,
                                             const char *url, const char *method,
                                             const char *version, const char *upload_data,
                                             size_t *upload_data_size, void **con_cls) {
-  const char *page = "<html><body><h1>Servidor esta funcionado asi super wow</h1></body></html>";
-  struct MHD_Response *response;
-  enum MHD_Result ret;
-
-  response = MHD_create_response_from_buffer(strlen(page), (void *)page, MHD_RESPMEM_PERSISTENT);
   
-  MHD_add_response_header(response, "Content-Type", "text/html; charset=utf-8");
+  if (0 != strcmp(method, MHD_HTTP_METHOD_POST)) {
+    request_handler_callback handler = cls;
+    return handler(cls, connection, url, method, NULL, 0);
+  }
+  
+  PostContext *post_ctx = *con_cls;
+  
+  if (NULL == post_ctx) {
+    post_ctx = calloc(1, sizeof(PostContext));
+    if (NULL == post_ctx){
+      return MHD_NO;
+    }
+    *con_cls = post_ctx;
+    return MHD_YES;
+  }
 
-  ret = MHD_queue_response(connection, MHD_HTTP_OK, response);
+  if (*upload_data_size != 0) {
+    post_ctx->data = realloc(post_ctx->data, post_ctx->size + *upload_data_size);
+    if(NULL == post_ctx->data){
+      return MHD_NO;
+    }
+    memcpy(post_ctx->data + post_ctx->size, upload_data, *upload_data_size);
+    post_ctx->size += *upload_data_size;
+    *upload_data_size = 0;
+    return MHD_YES;
+  }
 
-  MHD_destroy_response(response);
 
-  return ret;
+  request_handler_callback handler = cls;
+  return handler(cls, connection, url, method, post_ctx->data, post_ctx->size);
+
 }
 
-struct MHD_Daemon *start_server(unsigned int port) {
+static void request_completed_callback(void *cls, struct MHD_Connection *connection, void **con_cls,
+                                       enum MHD_RequestTerminationCode toe){
+
+  PostContext *post_ctx = *con_cls;
+
+  if (NULL == post_ctx){
+    return;
+  }
+
+  if (post_ctx->data) {
+    free(post_ctx->data);
+  }
+  free(post_ctx);
+  *con_cls = NULL;
+
+}
+
+struct MHD_Daemon *start_server(unsigned int port, request_handler_callback handler, void *cls) {
   struct MHD_Daemon *MHD_daemon;
 
   MHD_daemon = MHD_start_daemon(MHD_USE_SELECT_INTERNALLY, port, NULL, NULL,
-                            &answer_to_connection, NULL, MHD_OPTION_END);
+                              &answer_to_connection, handler, MHD_OPTION_NOTIFY_COMPLETED,
+                              &request_completed_callback, NULL ,MHD_OPTION_END);
 
   if (NULL == MHD_daemon) {
     fprintf(stderr, "Error: No se pudo iniciar el demonio de libmicrohttpd\n");
@@ -42,4 +92,21 @@ void stop_server(struct MHD_Daemon *MHD_daemon) {
     MHD_stop_daemon(MHD_daemon);
     printf("Servidor Terminus detenido.\n");
   }
+}
+
+enum MHD_Result send_text_response(struct MHD_Connection *connection, const char *body, unsigned int status_code) {
+  struct MHD_Response *MHD_response;
+  enum MHD_Result ret;
+
+  MHD_response = MHD_create_response_from_buffer(strlen(body), (void *)body, MHD_RESPMEM_MUST_COPY);
+
+  if (NULL == MHD_response){
+    return MHD_NO;
+  }
+
+  MHD_add_response_header(MHD_response, "Content-Type", "text/plain; charset=utf-8");
+  ret = MHD_queue_response(connection, status_code, MHD_response);
+  MHD_destroy_response(MHD_response);
+
+  return ret;
 }
