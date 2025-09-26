@@ -9,5 +9,5 @@ cd build
 cmake ..
 make
 
-cp libcrypto.so ../src/python_wrapper/
-echo "complete: libcrypto.so copiada a src/python_wrapper/"
+cp libterminus_core.so ../src/python_wrapper/
+echo "complete: libterminus_core.so copiada a src/python_wrapper"
