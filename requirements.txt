@@ -1,1 +1,4 @@
 cffi
+requests
+tqdm
+concurrent.futures
