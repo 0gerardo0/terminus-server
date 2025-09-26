@@ -45,11 +45,7 @@ def python_request_handler(cls, connection, url, method, post_data, post_data_si
 
     print(f"\n [API] Petición recibida: {method.decode()} {url.decode()} con {post_data_size} bytes de datos.")
 
-    print(f"  -> DEBUG: Verificando método: {repr(method)} (Tipo: {type(method)})")
-    print(f"  -> DEBUG: Verificando URL:    {repr(url)} (Tipo: {type(url)})")
-
     if method == b"POST" and url == b"/encrypt":
-        print("  -> DEBUG: La condición IF fue exitosa. Entrando al bloque /encrypt.")
         if post_data_size > 0:
             data_to_encrypt = ffibuilder.unpack(post_data, post_data_size);
             encrypted_buffer = C.encrypt_message(data_to_encrypt, len(data_to_encrypt), app_key)
@@ -58,8 +54,9 @@ def python_request_handler(cls, connection, url, method, post_data, post_data_si
             return C.send_text_response(connection, encrypted_hex.encode('utf-8'), 200)
         else:
             return C.send_text_response(connection, b"Endpoint no encontrado.", 404)
-    print("  -> DEBUG: La condición IF falló. Devolviendo 404.")
+    print("DEBUG: La condición "if" falló. Devolviendo 404.")
     return C.send_text_response(connection, b"404 Not Found", 404)
+
 PORT = 8080
 mhd_daemon = ffibuilder.NULL
 app_key = ffibuilder.new("unsigned char[]", os.urandom(C.get_key_bytes()))
@@ -71,13 +68,12 @@ def main():
     print(f"Clave de sesion generada: {bytes(app_key).hex()}")
 
     while True:
-        print("\n--- Panel de Control del Servidor ---")
+        print("\nPanel de Control del Servidor")
 
         if mhd_daemon == ffibuilder.NULL:
             print("  [start]  - Iniciar el servidor API")
         else:
             print("  [stop]   - Detener el servidor")
-            print(f"  (Puedes probarlo con: curl -X POST --data 'Hola' http://127.0.0.1:{PORT}/encrypt")
 
         print("  [status] - Ver estado actual")
         print("  [exit]   - Salir")
@@ -86,7 +82,7 @@ def main():
 
         if command == "start":
             if mhd_daemon == ffibuilder.NULL:
-                print("Iniciando servidor con el manejador de API de PYTHON")
+                print("Iniciando servidor con el manejador de API de python")
                 mhd_daemon = C.start_server(PORT, python_request_handler, ffibuilder.NULL)
                 if mhd_daemon == ffibuilder.NULL:
                     print("ERROR: El núcleo en C falló al iniciar el servidor.")
