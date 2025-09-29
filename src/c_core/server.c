@@ -110,3 +110,22 @@ enum MHD_Result send_text_response(struct MHD_Connection *connection, const char
 
   return ret;
 }
+
+enum MHD_Result send_binary_response(struct MHD_Connection *connection, const char *body, size_t body_len,
+                                     const char *content_type, unsigned int status_code){
+
+  struct MHD_Response *mhd_response;
+  enum MHD_Result ret;
+
+  mhd_response = MHD_create_response_from_buffer(body_len, (void *)body, MHD_RESPMEM_MUST_COPY);
+
+  if(NULL ==  mhd_response) {
+    return MHD_NO;
+  }
+
+  MHD_add_response_header(mhd_response, "Content-Type", content_type);
+  ret = MHD_queue_response(connection, status_code, mhd_response);
+  MHD_destroy_response(mhd_response);
+
+  return ret;
+}
