@@ -23,6 +23,24 @@ logging.basicConfig(
               logging.StreamHandler()]
 )
 
+def api_error(connection, message, status_code, error_code=None):
+    if 400 <= status_code < 500:
+        logging.warning(f"Error de cliente ({status_code}): {message}")
+    else:
+        logging.error(f"Error de servidor ({status_code}): {message}")
+
+    response_dict = {"error": message}
+    if error_code:
+        response_dict["code"] = error_code
+    
+    json_response = json.dumps(response_dict)
+    
+    return C.send_binary_response(connection, 
+                                  json_response.encode('utf-8'),
+                                  len(json_response),
+                                  b"application/json; charset=utf-8",
+                                  status_code)
+
 ffibuilder = cffi.FFI()
 ffibuilder.cdef("""
     struct MHD_Daemon;
@@ -108,13 +126,12 @@ setup_storage()
 
 @ffibuilder.callback("int(void*, struct MHD_Connection*, const char*, const char*, const char*, size_t, const char*)")
 def python_request_handler(cls, connection, url, method, post_data, post_data_size, auth_header_ptr):
+    
+    url = ffibuilder.string(url)
+    method = ffibuilder.string(method)
 
-    url_str = ffibuilder.string(url).decode('utf-8', errors='ignore')
-    method_str = ffibuilder.string(method).decode('utf-8', errors='ignore')
     if not auth_header_ptr:
-        logging.warning(f"Intento de acceso no autenticado a '{url_str}'. Se requiere autenticacion (401)")
-        error_msg = b"Se requiere autenticacion"
-        return C.send_text_response(connection, error_msg, 401)
+        return api_error(connection, "Se requiere autenticacion", 401, "AUTH_REQUIRED")
     
     auth_header = ffibuilder.string(auth_header_ptr).decode('utf-8')
     logging.debug(f"AUTH_HEADER recibido: {repr(auth_header)}")
@@ -124,12 +141,10 @@ def python_request_handler(cls, connection, url, method, post_data, post_data_si
     logging.debug(f"Partes del header de autenticación: {parts}")
     
     if len(parts) != 2 or parts[0] != "Bearer" or parts[1] != API_TOKEN:
-        logging.warning(f"Intento de acceso a '{url_str}' con token invalido o mal formado (401)")
-        error_msg = b"Token invalido o mal formado"
-        return C.send_text_response(connection, error_msg, 401)
+        return api_error(connection, f"Token invalido o mal formado", 401, "TOKEN_INVALID")
 
     
-    logging.info(f"Petición AUTENTICADA recibida: {method_str} {url_str}")
+    logging.info(f"Petición AUTENTICADA recibida: {method.decode("utf-8")} {url.decode("utf-8")}")
 
     #if method == b"POST" and url == b"/encrypt":
     #    if post_data_size > 0:
@@ -152,8 +167,7 @@ def python_request_handler(cls, connection, url, method, post_data, post_data_si
             logging.info(f"Se listaron {len(filtered_files)} archivos exitosamente")
             return C.send_binary_response(connection, json_response.encode('utf-8'), len(json_response), b"application/json", 200)
         else:
-            logging.warning(f"El directorio de almacenamiento '{STORAGE_DIR}' no existe o no es un directorio. Se devolvio una lista vacia")
-            return C.send_binary_response(connection, b"[]", len(b"[]"), b"application/json", 200)
+            return api_error(connection, "El directorio de almacenamiento no existe en el servidor", 500, "STORAGE_NOT_FOUND")
     
 
     elif url.startswith(b"/files/"):
@@ -161,14 +175,11 @@ def python_request_handler(cls, connection, url, method, post_data, post_data_si
         filename_str = filename_bytes.decode('utf-8')
 
         if filename_str.startswith('.'):
-            logging.warning(f"Acceso denegado a archivo de sistema solicitado: '{filename_str}' (403)")
-            error_msg = b"Acceso a archivos de sistema no permitido"
-            return C.send_text_response(connection, error_msg, 403)
-        
+            return api_error(connection, "Acceso a archivos de sistema no permitido", 403, "FORBIDDEN_FILENAME")
+
         if not is_filename_safe(filename_str):
-            logging.warning(f"Se recibio una peticion con un nombre de archivo invalido o inseguro '{filename_str}' (400)")
-            error_msg = b"Nombre de archivo invalido"  
-            return C.send_text_response(connection, error_msg, 400)
+            return api_error(connection, "Nombre de archivo invalido. No puede contener '..' o '/'.", 400, "INVALID_FILENAME")
+
         file_path = os.path.join(STORAGE_DIR, filename_str)
 
         # ENDPOINT de Subida
@@ -191,12 +202,9 @@ def python_request_handler(cls, connection, url, method, post_data, post_data_si
                     success_msg = f"Archivo '{filename_str}' guardado y cifrado"
                     return C.send_text_response(connection, success_msg.encode('utf-8'), 201)
                 except IOError as e:
-                    logging.error(f"Error de I/O al escribir al archivo '{file_path}', {e} (500)")
-                    error_msg = f"Error al escribir el archivo: {e}".encode('utf-8')
-                    return C.send_text_response(connection, error_msg, 500)
+                    return api_error(connection, f"Error interno al escribir el archivo: {e}", 500, "FILE_WRITE_ERROR")
             else:
-                logging.warning(f"Se recibio una peticion POST para '{filename_str} sin datos en el cuerpo (400)'")
-                return C.send_text_response(connection, b"Cuerpo dela peticion vacio", 400)
+                return api_error(connection, "Cuerpo de la peticion vacio.", 400, "EMPTY_BODY")
 
         #ENDPOINT de Descarga
         elif method == b"GET":
@@ -204,24 +212,18 @@ def python_request_handler(cls, connection, url, method, post_data, post_data_si
             logging.info(f"Iniciando descarga y descifrando el archivo: '{filename_str}'")
             file_path = os.path.join(STORAGE_DIR, filename_str)
             if not os.path.exists(file_path):
-                logging.warning(f"Se intento descargar un archivo no existente: '{filename_str}', (404)")
-                error_msg = b"Archivo no encontrado"
-                return C.send_text_response(connection, error_msg, 404)
+                return api_error(connection, f"El archivo '{filename_str}' no fue encontrado.", 404, "FILE_NOT_FOUND")
 
             try:
                 with open(file_path, "rb") as f:
                     encrypted_data = f.read()
             except IOError as e:
-                logging.error(f"Error de I/O al leer el archivo '{file_path}': {e} (500)")
-                error_msg = f"Error al leer el archivo: {e}"
-                return C.send_text_response(connection, error_msg.encode('utf-8'), 500)
+                return api_error(connection, f"Error interno al leer el archivo: {e}", 500, "FILE_READ_ERROR")
             
             decrypted_buffer = C.decrypt_message(encrypted_data, len(encrypted_data), app_key)
             
             if decrypted_buffer.buffer == ffibuilder.NULL:
-                error_msg = f"¡FALLO DE SEGURIDAD O CORRUPCIÓN! No se pudo descifrar el archivo: '{filename_str}'"
-                logging.error(error_msg)
-                return C.send_text_response(connection, b"Fallo al descifrar el archivo.", 500)
+                return api_error(connection, "Fallo al descifrar el archivo. Puede estar corrupto o la clave cambió.", 500, "DECRYPTION_FAILED")
             
             decrypted_data = ffibuilder.unpack(decrypted_buffer.buffer, decrypted_buffer.len)
             C.free_buffer(decrypted_buffer)
@@ -229,13 +231,11 @@ def python_request_handler(cls, connection, url, method, post_data, post_data_si
             logging.info(f"Archivo '{filename_str}' descifrado y enviado exitosamente ({len(decrypted_data)} bytes)")
             return C.send_binary_response(connection, decrypted_data, len(decrypted_data), b"application/octet-stream", 200) 
         
-        #ENDPOINT de ELiminacion
+        #ENDPOINT de Eliminacion
         elif method == b"DELETE":
             file_path = os.path.join(STORAGE_DIR, filename_str)
             if not os.path.exists(file_path):
-                logging.warning(f"Intento de borrar un archivo no existente: '{filename_str}' (404).")
-                error_msg = b"Archivo no encontrado en el servidor"
-                return C.send_text_response(connection, error_msg.encode('utf-8'), 404)
+                return api_error(connection, f"El archivo '{filename_str}' no fue encontrado.", 404, "FILE_NOT_FOUND")
 
             try:
                 os.remove(file_path)
@@ -243,12 +243,9 @@ def python_request_handler(cls, connection, url, method, post_data, post_data_si
                 logging.info(success_msg)
                 return C.send_text_response(connection, success_msg.encode('utf-8'), 200)
             except OSError as e:
-                logging.error(f"Error de sistema al borrar el archivo '{file_path}: {e} (500)'")
-                error_msg = f"Error al borrar el archivo {e}"
-                return C.send_text_response(connection, error_msg.encode('utf-8'), 500)
+                return api_error(connection, f"Error interno al borrar el archivo: {e}", 500, "FILE_DELETE_ERROR")
     
-    logging.warning(f"Se accedio a una ruta no existente: {method_str} {url_str} (404)")
-    return C.send_text_response(connection, b"404 Not Found", 404)
+    return api_error(connection, "Endpoint no encontrado.", 404, "ENDPOINT_NOT_FOUND")
 
 mhd_daemon = ffibuilder.NULL
 app_key = ffibuilder.new("unsigned char[]", key_bytes)
