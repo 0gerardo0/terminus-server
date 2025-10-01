@@ -12,3 +12,4 @@ __pycache__/
 venv/|
 config.json
 client_config.json
+terminus.log
