@@ -11,3 +11,4 @@ __pycache__/
 # Virtual de Python
 venv/|
 config.json
+client_config.json
