@@ -42,7 +42,7 @@ static enum MHD_Result answer_to_connection(void *cls,
   
   if (0 != strcmp(method, MHD_HTTP_METHOD_POST)) {
     const char *auth = MHD_lookup_connection_value(connection, MHD_HEADER_KIND, "Authorization");
-    MHD_get_connection_values(connection, MHD_HEADER_KIND, &header_printer, NULL);
+    //MHD_get_connection_values(connection, MHD_HEADER_KIND, &header_printer, NULL);
     request_handler_callback handler = cls;
     return handler(cls, connection, url, method, NULL, 0, auth);
   }
@@ -69,7 +69,7 @@ static enum MHD_Result answer_to_connection(void *cls,
     return MHD_YES;
   } 
   const char *auth = MHD_lookup_connection_value(connection, MHD_HEADER_KIND, "Authorization");
-  MHD_get_connection_values(connection, MHD_HEADER_KIND, &header_printer, NULL);
+  //MHD_get_connection_values(connection, MHD_HEADER_KIND, &header_printer, NULL);
   request_handler_callback handler = cls;
   return handler(cls, connection, url, method, post_ctx->data, post_ctx->size, auth);
 
