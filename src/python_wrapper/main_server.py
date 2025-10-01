@@ -85,7 +85,15 @@ ffibuilder.cdef("""
 """)
 
 try:
-    C = ffibuilder.dlopen('./src/python_wrapper/libterminus_core.so')
+    _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+    _PROJECT_ROOT =  os.path.dirname(os.path.dirname(_SCRIPT_DIR))
+    _LIB_PATH = os.path.join(_PROJECT_ROOT, "build", "libterminus_core.so")
+except NameError:
+    _LIB_PATH = '.build/libterminus_core.so'
+
+
+try:
+    C = ffibuilder.dlopen(_LIB_PATH)
 except OSError as e:
     logging.critical(f"No se pudo cargar la biblioteca 'libterminus_core.so'. El servidor no se puede iniciar. Error: {e}")
     logging.critical("Asegúrate de haber compilado el proyecto con 'bash scripts/build.sh'")

@@ -9,5 +9,4 @@ cd build
 cmake ..
 make
 
-cp libterminus_core.so ../src/python_wrapper/
-echo "complete: libterminus_core.so copiada a src/python_wrapper"
+echo "complete: build/libterminus_core.so"

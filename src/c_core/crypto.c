@@ -11,7 +11,6 @@ typedef struct  {
 
 
 BytesBuffer encrypt_message(const unsigned char* message, size_t message_len, const unsigned char* key){
-  printf("[C-DEBUG] Entrando a encrypt_message. Longitud del mensaje: %zu\n", message_len);
   if(sodium_init() < 0) {
     return (BytesBuffer){NULL, 0};
   }
@@ -39,7 +38,6 @@ BytesBuffer encrypt_message(const unsigned char* message, size_t message_len, co
   
   free(ciphertext);
 
-  printf("[C-DEBUG] Saliendo de encrypt_message. Longitud del payload: %zu\n", total_len);
   return (BytesBuffer){full_payload, total_len};
 }
 

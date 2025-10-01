@@ -18,10 +18,16 @@ ffibuilder.cdef("""
     size_t get_key_bytes(void); 
 """)
 try:
-    C = ffibuilder.dlopen('./src/python_wrapper/libcrypto.so')
-except OSError:
-    print("Error: No se encontro 'libcrypto.so'")
-    exit(1)
+    _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+    _PROJECT_ROOT =  os.path.dirname(_SCRIPT_DIR)
+    _LIB_PATH = os.path.join(_PROJECT_ROOT, "build", "libterminus_core.so")
+except NameError:
+    _LIB_PATH = '.build/libterminus_core.so'
+
+
+C = ffibuilder.dlopen(_LIB_PATH)
+
+
 
 plaintext = "------Mensaje secreto muy secreto secretoso----".encode('utf-8')
 
