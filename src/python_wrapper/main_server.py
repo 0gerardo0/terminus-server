@@ -2,35 +2,55 @@ import cffi
 import time
 import os 
 import json
+from config import load_config
+
+config = load_config()
+PORT = config["server_port"]
+STORAGE_DIR = config["storage_directory"]
+API_TOKEN = config["api_secret_token"]
+
 
 ffibuilder = cffi.FFI()
 ffibuilder.cdef("""
     struct MHD_Daemon;
     struct MHD_Connection;
-
     typedef struct {
         char* buffer;
         size_t len;
     } BytesBuffer;
 
-    BytesBuffer encrypt_message(const unsigned char* message, size_t message_len, const unsigned char* key);
+    enum MHD_ValueKind {
+      MHD_HEADER_KIND = 0
+    };
 
-    BytesBuffer decrypt_message(const unsigned char* full_payload, size_t payload_len, const unsigned char* key);
+    const char *MHD_lookup_connection_value(struct MHD_Connection *connection,
+                                            enum MHD_ValueKind kind,
+                                            const char *key);
 
+    BytesBuffer encrypt_message(const unsigned char* message, size_t message_len,
+                                  const unsigned char* key);
+    BytesBuffer decrypt_message(const unsigned char* full_payload, size_t payload_len,
+                                  const unsigned char* key);
     void free_buffer(BytesBuffer buffer);
     size_t get_key_bytes(void);
 
-    typedef int (*request_handler_callback)(void *cls, struct MHD_Connection *connection,
-                                            const char *url, const char *method,
-                                            const char *post_data,
-                                            size_t post_data_size);
+    typedef int (*request_handler_callback)(
+        void *cls,
+        struct MHD_Connection *connection,
+        const char *url,
+        const char *method,
+        const char *post_data,
+        size_t post_data_size,
+        const char *auth_header
+    );
 
-    struct MHD_Daemon* start_server(unsigned int port, request_handler_callback handler, void* cls);
+    struct MHD_Daemon* start_server(unsigned int port, request_handler_callback handler);
     void stop_server(struct MHD_Daemon* daemon);
-
-    int send_text_response(struct MHD_Connection *connection, const char *body, unsigned int status_code);
-    int send_binary_response(struct MHD_Connection *connection, const char *body, size_t body_len, const char *content_type,
-                            unsigned int status_code);
+    int send_text_response(struct MHD_Connection *connection, const char *body,
+                           unsigned int status_code);
+    int send_binary_response(struct MHD_Connection *connection, const char *body,
+                             size_t body_len, const char *content_type,
+                             unsigned int status_code);
 """)
 
 try:
@@ -44,7 +64,6 @@ except OSError as e:
 def is_filename_safe(filename):
     return ".." not in filename and "/" not in filename
 
-STORAGE_DIR = "terminus_storage"
 KEY_FILE = os.path.join(STORAGE_DIR, ".secret_key")
 
 def keyapp():
@@ -75,11 +94,27 @@ def setup_storage():
 key_bytes = keyapp()
 setup_storage()
 
-@ffibuilder.callback("int(void*, struct MHD_Connection*, const char*, const char*, const char*, size_t)")
-def python_request_handler(cls, connection, url, method, post_data, post_data_size):
+
+@ffibuilder.callback("int(void*, struct MHD_Connection*, const char*, const char*, const char*, size_t, const char*)")
+def python_request_handler(cls, connection, url, method, post_data, post_data_size, auth_header_ptr):
+
+    if not auth_header_ptr:
+        print(f"Este es el valor de auth : {auth_header_ptr}")
+        error_msg = b"Se requiere autenticacion"
+        return C.send_text_response(connection, error_msg, 401)
+    
+    auth_header = ffibuilder.string(auth_header_ptr).decode('utf-8')
+    print("DEBUG AUTH_HEADER:", repr(auth_header))
+    print("DEBUG API_TOKEN:", repr(API_TOKEN))
+    parts = auth_header.split()
+    print("DEBUG PARTS:", parts)
+    if len(parts) != 2 or parts[0] != "Bearer" or parts[1] != API_TOKEN:
+        error_msg = b"Token invalido o mal formado"
+        return C.send_text_response(connection, error_msg, 401)
+
     method = ffibuilder.string(method)
     url = ffibuilder.string(url)
-
+    
     print(f"\n [API] Petición recibida: {method.decode()} {url.decode()} con {post_data_size} bytes de datos.")
 
     if method == b"POST" and url == b"/encrypt":
@@ -178,7 +213,6 @@ def python_request_handler(cls, connection, url, method, post_data, post_data_si
     
     return C.send_text_response(connection, b"404 Not Found", 404)
 
-PORT = 8080
 mhd_daemon = ffibuilder.NULL
 app_key = ffibuilder.new("unsigned char[]", key_bytes)
 
@@ -188,34 +222,44 @@ def main():
     
     print(f"Clave de sesion generada: {bytes(app_key).hex()}")
 
+    print("Server activo ")
+    mhd_daemon = C.start_server(PORT, python_request_handler)
+
+    if mhd_daemon == ffibuilder.NULL:
+        print("error de inicio")
+        return
+
     while True:
         print("\nPanel de Control del Servidor")
 
-        if mhd_daemon == ffibuilder.NULL:
-            print("  [start]  - Iniciar el servidor API")
-        else:
-            print("  [stop]   - Detener el servidor")
+        #if mhd_daemon == ffibuilder.NULL:
+        #    print("  [start]  - Iniciar el servidor API")
+        #else:
+        #    print("  [stop]   - Detener el servidor")
 
         print("  [status] - Ver estado actual")
         print("  [exit]   - Salir")
         
         command = input("> ").strip().lower()
 
-        if command == "start":
-            if mhd_daemon == ffibuilder.NULL:
-                print("Iniciando servidor con el manejador de API de python")
-                mhd_daemon = C.start_server(PORT, python_request_handler, ffibuilder.NULL)
-                if mhd_daemon == ffibuilder.NULL:
-                    print("ERROR: El núcleo en C falló al iniciar el servidor.")
-            else:
-                print("AVISO: El servidor ya está en funcionamiento.")
+        #if command == "start":
+        #    if mhd_daemon == ffibuilder.NULL:
+        #        print("Iniciando servidor con el manejador de API de python")
+        #        mhd_daemon = C.start_server(PORT, python_request_handler, ffibuilder.NULL)
+        #        if mhd_daemon == ffibuilder.NULL:
+        #            print("ERROR: El núcleo en C falló al iniciar el servidor.")
+        #    else:
+        #        print("AVISO: El servidor ya está en funcionamiento.")
         
-        elif command == "stop":
+        #Aqui cambie el control para iniciar el server, provisional
+        if command == "stop":
             if mhd_daemon != ffibuilder.NULL:
                 C.stop_server(mhd_daemon)
                 mhd_daemon = ffibuilder.NULL
-            else:
-                print("AVISO: El servidor ya está detenido.")
+            print("saliendo del panel detenido")
+            break
+            #else:
+            #    print("AVISO: El servidor ya está detenido.")
 
         elif command == "status":
             if mhd_daemon == ffibuilder.NULL:
