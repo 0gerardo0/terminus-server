@@ -24,7 +24,7 @@ sudo pacman -S gcc cmake pkg-config libsodium libmicrohttpd python python-pip
  ## Instalación y Compilación 
 
 ```bash
-git clone <https://github.com/0gerardo0/terminus-server.git>
+git clone https://github.com/0gerardo0/terminus-server.git
 cd terminus-server
 ```
 ### Preparar el entorno de Python
