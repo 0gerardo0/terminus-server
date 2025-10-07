@@ -1,6 +1,10 @@
 # Terminus 
 Un servidor de archivos personal, ligero y seguro con cifrado en reposo lógico, escrito en C y Python.
 
+## Arquitectura del Sistema
+
+![Diagrama de Arquitectura de Terminus](docs/terminus-arq-DAS.svg)
+
 ## Características
 
 * **API RESTful:** Endpoints para subir, descargar, listar y borrar archivos.
