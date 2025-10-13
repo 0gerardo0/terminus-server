@@ -1,9 +1,9 @@
 import cffi
-import time
 import os 
 import json
 import logging
 from config import load_config
+from datetime import datetime
 
 config = load_config()
 PORT = config["server_port"]
@@ -174,7 +174,7 @@ def python_request_handler(cls, connection, url, method, post_data, post_data_si
     #    else:
     #        return C.send_text_response(connection, b"Endpoint no encontrado.", 404)
     
-    if method == b"GET" and url == b"/files":
+    elif method == b"GET" and url == b"/files":
         logging.info("Solicitud recibida para listar archivos en el directorio de almacenamiento")
 
         if os.path.exists(STORAGE_DIR) and os.path.isdir(STORAGE_DIR):
@@ -187,6 +187,35 @@ def python_request_handler(cls, connection, url, method, post_data, post_data_si
         else:
             return api_error(connection, "El directorio de almacenamiento no existe en el servidor", 500, "STORAGE_NOT_FOUND")
     
+    elif method == b"GET" and url.endswith(b"/info") and url.startswith(b"/files/"):
+        try:
+            filename_str = url.split(b'/')[-2].decode('utf-8')
+        except (IndexError, UnicodeDecodeError):
+            return api_error(connection, "URL malformado.", 400, "MALFORMED_URL")
+        
+        if filename_str.startswith('.'):
+            return api_error(connection, "Acceso a archivo de sistema no permitido.", 403, "FORBIDDEN_FILENAME")
+        if not is_filename_safe(filename_str):
+            return  api_error(connection, "Nombre de archivo invalido.", 400, "INVALID_FILENAME")
+
+        file_path = os.path.join(STORAGE_DIR, filename_str)
+        if not os.path.exists(file_path):
+            return api_error(connection, f"El archivo '{filename_str}', no fue encontrado.", 404, "FILE_NOT_FOUND")
+        
+        try:
+            stats = os.stat(file_path)
+
+            info = {
+                "filename": filename_str,
+                "size_bytes": stats.st_size,
+                "modified_at": datetime.fromtimestamp(stats.st_mtime).isoformat()
+            }
+            json_response = json.dumps(info)
+
+            return C.send_binary_response(connection, json_response.encode('utf-8'), len(json_response), b"application/json", 200)
+        except OSError as e:
+            return api_error(connection, f"Error interno al leer metadatos: {e}", 500, "STAT_ERROR")
+
 
     elif url.startswith(b"/files/"):
         filename_bytes = url.split(b"/")[-1]
@@ -262,7 +291,8 @@ def python_request_handler(cls, connection, url, method, post_data, post_data_si
                 return C.send_text_response(connection, success_msg.encode('utf-8'), 200)
             except OSError as e:
                 return api_error(connection, f"Error interno al borrar el archivo: {e}", 500, "FILE_DELETE_ERROR")
-    
+        
+
     return api_error(connection, "Endpoint no encontrado.", 404, "ENDPOINT_NOT_FOUND")
 
 mhd_daemon = ffibuilder.NULL
