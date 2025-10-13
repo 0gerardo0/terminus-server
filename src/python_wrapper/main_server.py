@@ -15,6 +15,8 @@ LOG_FILE = config.get("log_file", "terminus.log")
 
 KEY_FILE = os.path.join(STORAGE_DIR, ".secret_key")
 
+APP_VERSION = "1.0.0"
+
 
 logging.basicConfig(
     level=LOG_LEVEL,
@@ -153,6 +155,14 @@ def python_request_handler(cls, connection, url, method, post_data, post_data_si
 
     
     logging.info(f"Petición AUTENTICADA recibida: {method.decode("utf-8")} {url.decode("utf-8")}")
+    
+    if method == b"GET" and url == b"/status":
+        status_info = {
+            "status": "ok",
+            "version": APP_VERSION
+        }
+        json_response = json.dumps(status_info)
+        return C.send_binary_response(connection, json_response.encode('utf-8'), len(json_response), b"application/json", 200)
 
     #if method == b"POST" and url == b"/encrypt":
     #    if post_data_size > 0:
