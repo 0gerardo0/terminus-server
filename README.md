@@ -98,7 +98,9 @@ python client.py rm archivo.txt
 
 | Método | Endpoint                | Descripción                                                 |
 | :----- | :---------------------- | :---------------------------------------------------------- |
+| `GET`  | `/status`                | Verifica el estado y la versión del servidor.             |
 | `GET`  | `/files`                | Lista los nombres de los archivos almacenados.                |
 | `POST` | `/files/{filename}`     | Sube un archivo. El contenido va en el cuerpo de la petición. |
 | `GET`  | `/files/{filename}`     | Descarga el contenido de un archivo.                        |
 | `DELETE`| `/files/{filename}`     | Borra un archivo del servidor.                              |
+| `GET` |   `/files/{filename}/info` | Obtine los metadatos de un archivo. (tamaño, fecha).     |
