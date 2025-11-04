@@ -47,7 +47,7 @@ Esto compilará la imagen de Docker la primera vez y la iniciará. El servidor s
 ## Instalación y Compilación (Manual)
 
 ```bash 
-git clone <git@github.com:0gerardo0/terminus-server.git>
+git clone git@github.com:0gerardo0/terminus-server.git
 cd Terminus
 ```
 ### Preparar el entorno de Python
