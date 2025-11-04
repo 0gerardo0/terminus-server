@@ -25,10 +25,29 @@ Para compilar y ejecutar:
 sudo pacman -S gcc cmake pkg-config libsodium libmicrohttpd python python-pip
 ```
 
- ## Instalación y Compilación 
+## Despliegue con Docker (Recomendado)
+La forma más sencilla y recomendada de ejecutar el servidor Terminus es usando Docker y Docker Compose. Esto gestionará automáticamente la compilación, las dependencias y el entorno de ejecución.
 
+1. Contruye e inicia el servidor:
 ```bash
-git clone <xd aun no tengo el repo>
+    docker-compose up --build
+```
+Esto compilará la imagen de Docker la primera vez y la iniciará. El servidor se ejecutará en primer plano, mostrando los logs en tiempo real.
+
+2. Para iniciar en segundo plano:
+```bash
+    docker-compose up --build -d
+```
+3. Para detener el servidor:
+* Si lo iniciaste en primer plano, detener con `Ctrl+C`.
+* Si lo iniciaste en segundo plano, ejecutar:
+```bash
+    docker-compose down
+```
+## Instalación y Compilación (Manual)
+
+```bash 
+git clone <git@github.com:0gerardo0/terminus-server.git>
 cd Terminus
 ```
 ### Preparar el entorno de Python
@@ -73,7 +92,7 @@ Crear un archivo `client_config.json`  en la raiz del proyecto.
 
 ## Uso 
 
-1. Iniciar el servidor en una terminal:
+1. Iniciar el servidor (ya sea con `docker-compose up` o `python src/python_wrapper/main_server.py`):
 
 ```bash
 python src/python_wrapper/main_server.py

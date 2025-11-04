@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  
+  terminus:
+    build: .
+    image: terminus:latest
+    
+    restart: unless-stopped
+    
+    ports:
+      - "8080:8080"
+      
+    volumes:
+      - ./terminus_storage:/app/terminus_storage
+      - ./config.json:/app/config.json
