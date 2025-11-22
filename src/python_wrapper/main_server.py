@@ -16,7 +16,7 @@ LOG_FILE = config.get("log_file", "terminus.log")
 
 KEY_FILE = os.path.join(STORAGE_DIR, ".secret_key")
 
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0-docker"
 
 
 logging.basicConfig(
