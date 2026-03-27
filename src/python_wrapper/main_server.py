@@ -1,9 +1,10 @@
 import cffi
-import time
 import os 
 import json
+import time
 import logging
 from config import load_config
+from datetime import datetime
 
 config = load_config()
 PORT = config["server_port"]
@@ -14,6 +15,8 @@ LOG_LEVEL = config.get("log_level", "INFO").upper()
 LOG_FILE = config.get("log_file", "terminus.log")
 
 KEY_FILE = os.path.join(STORAGE_DIR, ".secret_key")
+
+APP_VERSION = "1.1.0-docker"
 
 
 logging.basicConfig(
@@ -153,6 +156,14 @@ def python_request_handler(cls, connection, url, method, post_data, post_data_si
 
     
     logging.info(f"Petición AUTENTICADA recibida: {method.decode("utf-8")} {url.decode("utf-8")}")
+    
+    if method == b"GET" and url == b"/status":
+        status_info = {
+            "status": "ok",
+            "version": APP_VERSION
+        }
+        json_response = json.dumps(status_info)
+        return C.send_binary_response(connection, json_response.encode('utf-8'), len(json_response), b"application/json", 200)
 
     #if method == b"POST" and url == b"/encrypt":
     #    if post_data_size > 0:
@@ -164,7 +175,7 @@ def python_request_handler(cls, connection, url, method, post_data, post_data_si
     #    else:
     #        return C.send_text_response(connection, b"Endpoint no encontrado.", 404)
     
-    if method == b"GET" and url == b"/files":
+    elif method == b"GET" and url == b"/files":
         logging.info("Solicitud recibida para listar archivos en el directorio de almacenamiento")
 
         if os.path.exists(STORAGE_DIR) and os.path.isdir(STORAGE_DIR):
@@ -177,6 +188,35 @@ def python_request_handler(cls, connection, url, method, post_data, post_data_si
         else:
             return api_error(connection, "El directorio de almacenamiento no existe en el servidor", 500, "STORAGE_NOT_FOUND")
     
+    elif method == b"GET" and url.endswith(b"/info") and url.startswith(b"/files/"):
+        try:
+            filename_str = url.split(b'/')[-2].decode('utf-8')
+        except (IndexError, UnicodeDecodeError):
+            return api_error(connection, "URL malformado.", 400, "MALFORMED_URL")
+        
+        if filename_str.startswith('.'):
+            return api_error(connection, "Acceso a archivo de sistema no permitido.", 403, "FORBIDDEN_FILENAME")
+        if not is_filename_safe(filename_str):
+            return  api_error(connection, "Nombre de archivo invalido.", 400, "INVALID_FILENAME")
+
+        file_path = os.path.join(STORAGE_DIR, filename_str)
+        if not os.path.exists(file_path):
+            return api_error(connection, f"El archivo '{filename_str}', no fue encontrado.", 404, "FILE_NOT_FOUND")
+        
+        try:
+            stats = os.stat(file_path)
+
+            info = {
+                "filename": filename_str,
+                "size_bytes": stats.st_size,
+                "modified_at": datetime.fromtimestamp(stats.st_mtime).isoformat()
+            }
+            json_response = json.dumps(info)
+
+            return C.send_binary_response(connection, json_response.encode('utf-8'), len(json_response), b"application/json", 200)
+        except OSError as e:
+            return api_error(connection, f"Error interno al leer metadatos: {e}", 500, "STAT_ERROR")
+
 
     elif url.startswith(b"/files/"):
         filename_bytes = url.split(b"/")[-1]
@@ -252,73 +292,28 @@ def python_request_handler(cls, connection, url, method, post_data, post_data_si
                 return C.send_text_response(connection, success_msg.encode('utf-8'), 200)
             except OSError as e:
                 return api_error(connection, f"Error interno al borrar el archivo: {e}", 500, "FILE_DELETE_ERROR")
-    
+        
+
     return api_error(connection, "Endpoint no encontrado.", 404, "ENDPOINT_NOT_FOUND")
 
 mhd_daemon = ffibuilder.NULL
 app_key = ffibuilder.new("unsigned char[]", key_bytes)
 
 def main():
-
     global mhd_daemon 
     
     logging.info(f"Clave de sesion generada: {bytes(app_key).hex()}")
-    logging.info("Server iniciado en el puerto 8080")
 
     mhd_daemon = C.start_server(PORT, python_request_handler)
 
     if mhd_daemon == ffibuilder.NULL:
-        logging.error("Error al iniciar el servidor")
+        logging.critical("ERROR: El núcleo en C falló al iniciar el servidor.")
         return
-
-    while True:
-        print("\nPanel de Control del Servidor")
-
-        #if mhd_daemon == ffibuilder.NULL:
-        #    print("  [start]  - Iniciar el servidor API")
-        #else:
-        #    print("  [stop]   - Detener el servidor")
-
-        print("  [status] - Ver estado actual")
-        print("  [exit]   - Salir")
-        
-        command = input("> ").strip().lower()
-
-        #if command == "start":
-        #    if mhd_daemon == ffibuilder.NULL:
-        #        print("Iniciando servidor con el manejador de API de python")
-        #        mhd_daemon = C.start_server(PORT, python_request_handler, ffibuilder.NULL)
-        #        if mhd_daemon == ffibuilder.NULL:
-        #            print("ERROR: El núcleo en C falló al iniciar el servidor.")
-        #    else:
-        #        print("AVISO: El servidor ya está en funcionamiento.")
-        
-        #Aqui cambie el control para iniciar el server, provisional
-        if command == "stop":
-            if mhd_daemon != ffibuilder.NULL:
-                C.stop_server(mhd_daemon)
-                mhd_daemon = ffibuilder.NULL
-            logging.info("Saliendo del panel de control. Servidor detenido")
-            break
-            #else:
-            #    print("AVISO: El servidor ya está detenido.")
-
-        elif command == "status":
-            if mhd_daemon == ffibuilder.NULL:
-                logging.info("Estatus del servidor: DETENIDO")
-            else:
-                logging.info(f"Estatus del servidor: Funcionando en el puerto: {PORT}")
-        
-        elif command == "exit":
-            if mhd_daemon != ffibuilder.NULL:
-                logging.info("Estatus del servidor: [EXIT] Servidor detenido")
-                C.stop_server(mhd_daemon)
-                mhd_daemon = ffibuilder.NULL
-            logging.info("Saliendo del panel de control. Servidor detenido")
-            break
-        
-        else:
-            logging.info(f"Comando desconocido '{command}'")
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        logging.info("\nInterrupción (Ctrl+C) detectada. Saliendo...")
 
 if __name__ == "__main__":
     try:

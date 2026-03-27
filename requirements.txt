@@ -1,6 +1,4 @@
 cffi
 requests
 tqdm
-concurrent.futures
-requests
 pytest
