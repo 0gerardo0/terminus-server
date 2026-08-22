@@ -85,6 +85,9 @@ ffibuilder.cdef("""
     int send_binary_response(struct MHD_Connection *connection, const char *body,
                              size_t body_len, const char *content_type,
                              unsigned int status_code);
+    
+    BytesBuffer hash_password(const char* password, size_t password_len);
+    int verify_password(const char* stored_hash, const char* password, size_t password_len);
 """)
 
 try:

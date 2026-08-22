@@ -73,6 +73,37 @@ size_t get_key_bytes(void) {
   return crypto_secretbox_KEYBYTES;
 }
 
+BytesBuffer hash_password(const char* password, size_t password_len ){
+  if(sodium_init() < 0 ){
+    return (BytesBuffer){NULL, 0};
+  }
+  if (password == NULL || password_len == 0) {
+    return (BytesBuffer){NULL, 0};
+  }
+  char* encoded = malloc(crypto_pwhash_STRBYTES);
+  if (encoded == NULL) {
+    return (BytesBuffer){NULL, 0};
+  }
+  if (crypto_pwhash_str(encoded, password, password_len, crypto_pwhash_OPSLIMIT_INTERACTIVE, crypto_pwhash_MEMLIMIT_INTERACTIVE) !=0 ) {
+    free(encoded);
+    return (BytesBuffer){NULL, 0};
+  }
+  return (BytesBuffer){encoded, strlen(encoded)};
+}
+
+int verify_password(const char* stored_hash, const char* password, size_t password_len) {
+  if (sodium_init() < 0) {
+    return -1;
+  }
+  if (stored_hash == NULL || password == NULL || password_len == 0) {
+    return -1;
+  }
+  if (strlen(stored_hash) < 16) {
+    return -1;
+  }
+  return crypto_pwhash_str_verify(stored_hash,password, password_len);
+}
+
 void free_buffer(BytesBuffer buffer) {
   if (buffer.buffer != NULL){
     free(buffer.buffer);
