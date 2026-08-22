@@ -13,3 +13,5 @@ venv/|
 config.json
 client_config.json
 terminus.log
+terminus.db
+nvim.log
