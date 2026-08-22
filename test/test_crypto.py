@@ -15,7 +15,9 @@ ffibuilder.cdef("""
     BytesBuffer decrypt_message(const unsigned char* full_payload, size_t payload_len, const unsigned char* key);
     void free_buffer(BytesBuffer buffer);
    
-    size_t get_key_bytes(void); 
+    size_t get_key_bytes(void);
+    BytesBuffer hash_password(const char* password, size_t password_len);
+    int verify_password(const char* stored_hash, const char* password, size_t password_len);
 """)
 try:
     _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -28,43 +30,70 @@ except NameError:
 C = ffibuilder.dlopen(_LIB_PATH)
 
 
+def test_encrypt_decrypt_roundtrip():
+    plaintext = "------Mensaje secreto muy secreto secretoso----".encode('utf-8')
 
-plaintext = "------Mensaje secreto muy secreto secretoso----".encode('utf-8')
+    key_size = C.get_key_bytes()
+    key = os.urandom(key_size)
 
-key_size = C.get_key_bytes()
-key = os.urandom(key_size)
-
-print(f"Texto original: {plaintext.decode('utf-8')}")
-print(f"Clave (hex): {key.hex()}")
-print("-" * 20)
+    print(f"Texto original: {plaintext.decode('utf-8')}")
+    print(f"Clave (hex): {key.hex()}")
+    print("-" * 20)
 
 
-start_time = time.perf_counter()
-print(f"[PY-DEBUG] Llamando a C.encrypt_message con {len(plaintext)} bytes...")
-encrypt_buffer = C.encrypt_message(plaintext, len(plaintext), key)
-print(f"[PY-DEBUG] C devolvió un buffer de longitud {encrypt_buffer.len}")
-end_time = time.perf_counter()
+    start_time = time.perf_counter()
+    print(f"[PY-DEBUG] Llamando a C.encrypt_message con {len(plaintext)} bytes...")
+    encrypt_buffer = C.encrypt_message(plaintext, len(plaintext), key)
+    print(f"[PY-DEBUG] C devolvió un buffer de longitud {encrypt_buffer.len}")
+    end_time = time.perf_counter()
 
-duration_ms = (end_time - start_time) * 1000
-print(f"\nLa función en C 'encrypt_message' tardó: {duration_ms:.4f} ms")
+    duration_ms = (end_time - start_time) * 1000
+    print(f"\nLa función en C 'encrypt_message' tardó: {duration_ms:.4f} ms")
 
-encrypted_payload = ffibuilder.unpack(encrypt_buffer.buffer, encrypt_buffer.len)
-print(f"Payload cifrado (hex); {encrypted_payload.hex()}")
+    encrypted_payload = ffibuilder.unpack(encrypt_buffer.buffer, encrypt_buffer.len)
+    print(f"Payload cifrado (hex); {encrypted_payload.hex()}")
 
-C.free_buffer(encrypt_buffer)
+    C.free_buffer(encrypt_buffer)
 
-decrypt_buffer = C.decrypt_message(encrypted_payload, len(encrypted_payload), key)
+    decrypt_buffer = C.decrypt_message(encrypted_payload, len(encrypted_payload), key)
 
-if decrypt_buffer.buffer == ffibuilder.NULL:
-    print("\n Mensaje alterado, fallo")
-    exit(1)
-else:
-    decrypt_text_bytes = ffibuilder.unpack(decrypt_buffer.buffer, decrypt_buffer.len)
+    if decrypt_buffer.buffer == ffibuilder.NULL:
+        print("\n Mensaje alterado, fallo")
+        exit(1)
+    else:
+        decrypt_text_bytes = ffibuilder.unpack(decrypt_buffer.buffer, decrypt_buffer.len)
 
-    C.free_buffer(decrypt_buffer)
+        C.free_buffer(decrypt_buffer)
 
-    print("-" *20)
-    print(f"Texto descifrado: {decrypt_text_bytes.decode('utf-8')}")
+        print("-" *20)
+        print(f"Texto descifrado: {decrypt_text_bytes.decode('utf-8')}")
 
-    assert plaintext == decrypt_text_bytes
-    print("\n Verificacion: Texto original y descifrado coinciden")
+        assert plaintext == decrypt_text_bytes
+        print("\n Verificacion: Texto original y descifrado coinciden")
+
+def test_hash_password():
+    print("\n[TEST] Hasheando contrasena...")
+    password = "mi-contra-de-prueba-123".encode('utf-8')
+
+    hash_buffer = C.hash_password(password, len(password))
+    assert hash_buffer.buffer != ffibuilder.NULL, "hash_password fallo"
+    stored_hash = ffibuilder.string(hash_buffer.buffer)
+    C.free_buffer(hash_buffer)
+    print(f"Hash generado: {stored_hash.decode()}")
+
+    assert stored_hash.startswith(b"$argon2id$"), "No es un hash Argon2id"
+    assert password not in stored_hash, "La contrasena aparece en el hash"
+
+    print("[TEST] Verificando contrasena CORRECTA...")
+    assert C.verify_password(stored_hash, password, len(password)) == 0
+
+    print("[TEST] Verificando contrasena INCORRECTA...")
+    incorrecta = "no-es-la-clave".encode('utf-8')
+    assert C.verify_password(stored_hash, incorrecta, len(incorrecta)) != 0
+
+    print("[TEST] Verificando hash corrupto...")
+    corrupto = stored_hash[:-6] + b"XXXXXX"
+    assert C.verify_password(corrupto, password, len(password)) != 0
+
+    print("[TEST] Verificando hash vacio...")
+    assert C.verify_password(b"", password, len(password)) != 0
