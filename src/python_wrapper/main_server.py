@@ -1,5 +1,8 @@
 import cffi
 import os 
+from pathlib import Path
+import shutil
+import re
 import json
 import time
 import logging
@@ -136,11 +139,82 @@ def verify_password_c(stored_hash: str, password: str) -> bool:
     return C.verify_password(hash_bytes, pw_bytes, len(pw_bytes)) == 0
 
 
-def is_filename_safe(filename):
-    return ".." not in filename and "/" not in filename
+SAFE_FILENAME_REGEX = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,254}$")
+SYSTEM_RESERVED_NAMES = frozenset({
+    ".secret_key",
+    ".gitignore",
+    "config.json",
+    "client_config.json",
+    "terminus.db",
+    "terminus.log",
+})
+
+
+def get_user_storage_dir(user_id: int) -> Path:
+    return (Path(STORAGE_DIR).resolve() / f"u_{user_id}").resolve()
+
+
+def resolve_user_file_path(user_id: int, filename: str) -> tuple[Path | None, tuple[str, int, str] | None]:
+    if not isinstance(filename, str) or not filename.strip() or "\x00" in filename:
+        return None, ("Nombre de archivo invalido.", 400, "INVALID_FILENAME")
+
+    if not SAFE_FILENAME_REGEX.fullmatch(filename):
+        return None, ("Nombre de archivo invalido. Debe comenzar con caracter alfanumerico y no contener rutas relativas.", 400, "INVALID_FILENAME")
+
+    if filename.lower() in SYSTEM_RESERVED_NAMES:
+        return None, ("Acceso denegado a archivo reservado del sistema.", 403, "FORBIDDEN_FILE")
+
+    user_dir = get_user_storage_dir(user_id)
+    if os.path.islink(user_dir / filename):
+        return None, ("No se permiten enlaces simbolicos.", 403, "SYMLINK_FORBIDDEN")
+
+    try:
+        resolved = (user_dir / filename).resolve(strict=False)
+    except Exception:
+        return None, ("Ruta no valida.", 400, "INVALID_PATH")
+
+    if not resolved.is_relative_to(user_dir) or resolved == user_dir:
+        return None, ("Intento de escape de directorio detectado.", 400, "INVALID_PATH")
+
+    if resolved.is_symlink():
+        return None, ("No se permiten enlaces simbolicos.", 403, "SYMLINK_FORBIDDEN")
+
+    return resolved, None
+
+
+def setup_storage():
+    logging.info(f"Asegurando que el directorio de almacenamiento '{STORAGE_DIR}' existe")
+    os.makedirs(STORAGE_DIR, exist_ok=True)
+    
+    gitignore_path = os.path.join(STORAGE_DIR, ".gitignore")
+    if not os.path.exists(gitignore_path):
+        logging.info(f"Creando archivos .gitignore en '{STORAGE_DIR}' para proteger los archivos")
+        with open(gitignore_path, "w") as f:
+            f.write("*\n")
+            f.write("!.gitignore\n")
+
+    legacy_dir = os.path.join(STORAGE_DIR, "u_0")
+    os.makedirs(legacy_dir, exist_ok=True)
+
+    try:
+        for item in os.listdir(STORAGE_DIR):
+            if item.startswith("."):
+                continue
+            src = os.path.join(STORAGE_DIR, item)
+            if os.path.isdir(src) and (item == "u_0" or (item.startswith("u_") and item[2:].isdigit())):
+                continue
+            if os.path.isfile(src) and not os.path.islink(src):
+                dst = os.path.join(legacy_dir, item)
+                if not os.path.exists(dst):
+                    shutil.move(src, dst)
+                    logging.info(f"Migrado archivo legado '{item}' a '{legacy_dir}'")
+    except Exception as e:
+        logging.warning(f"Error al migrar archivos legados a u_0: {e}")
+setup_storage()
 
 
 def keyapp():
+    os.makedirs(STORAGE_DIR, exist_ok=True)
     if os.path.exists(KEY_FILE):
         with open(KEY_FILE, "rb") as f:
             key_bytes = f.read()
@@ -154,18 +228,6 @@ def keyapp():
 
     return key_bytes
 key_bytes = keyapp()
-
-def setup_storage():
-    logging.info(f"Asegurando que el directorio de almacenamiento '{STORAGE_DIR}' existe")
-    os.makedirs(STORAGE_DIR, exist_ok=True)
-    
-    gitignore_path = os.path.join(STORAGE_DIR, ".gitignore")
-    if not os.path.exists(gitignore_path):
-        logging.info(f"Creando archivos .gitignore en '{STORAGE_DIR}' para proteger los archivos")
-        with open(gitignore_path, "w") as f:
-            f.write("*\n")
-            f.write("!.gitignore\n")
-setup_storage()
 
 
 @ffibuilder.callback("int(void*, struct MHD_Connection*, const char*, const char*, const char*, size_t, const char*)")
@@ -294,6 +356,7 @@ def python_request_handler(cls, connection, url, method, post_data, post_data_si
     if not authenticated_user:
         return api_error(connection, "Token invalido o no autorizado", 401, "TOKEN_INVALID")
 
+    user_id = authenticated_user["id"]
     logging.info(f"Petición AUTENTICADA (usuario '{authenticated_user['username']}'): {method.decode('utf-8')} {url.decode('utf-8')}")
 
     #if method == b"POST" and url == b"/encrypt":
@@ -309,29 +372,36 @@ def python_request_handler(cls, connection, url, method, post_data, post_data_si
     if method == b"GET" and url == b"/files":
         logging.info("Solicitud recibida para listar archivos en el directorio de almacenamiento")
 
-        if os.path.exists(STORAGE_DIR) and os.path.isdir(STORAGE_DIR):
-            files = os.listdir(STORAGE_DIR)
-            filtered_files = [f for f in files if not f.startswith('.')]
-            json_response = json.dumps(filtered_files)
+        user_dir = get_user_storage_dir(user_id)
+        if not user_dir.is_dir():
+            return C.send_binary_response(connection, b"[]", 2, b"application/json", 200)
 
-            logging.info(f"Se listaron {len(filtered_files)} archivos exitosamente")
-            return C.send_binary_response(connection, json_response.encode('utf-8'), len(json_response), b"application/json", 200)
-        else:
-            return api_error(connection, "El directorio de almacenamiento no existe en el servidor", 500, "STORAGE_NOT_FOUND")
+        with os.scandir(user_dir) as entries:
+            filtered_files = [
+                entry.name for entry in entries
+                if not entry.name.startswith('.') and entry.is_file(follow_symlinks=False)
+            ]
+        json_response = json.dumps(filtered_files)
+
+        logging.info(f"Se listaron {len(filtered_files)} archivos exitosamente para usuario {user_id}")
+        return C.send_binary_response(connection, json_response.encode('utf-8'), len(json_response), b"application/json", 200)
     
-    elif method == b"GET" and url.endswith(b"/info") and url.startswith(b"/files/"):
+    elif method == b"GET" and url.startswith(b"/files/") and url.endswith(b"/info") and url != b"/files/info":
+        filename_raw = url[len(b"/files/"):-len(b"/info")]
+        if not filename_raw:
+            return api_error(connection, "URL malformado.", 400, "MALFORMED_URL")
+        if b"/" in filename_raw:
+            return api_error(connection, "Nombre de archivo invalido. No puede contener subdirectorios.", 400, "INVALID_FILENAME")
         try:
-            filename_str = url.split(b'/')[-2].decode('utf-8')
-        except (IndexError, UnicodeDecodeError):
+            filename_str = filename_raw.decode('utf-8')
+        except UnicodeDecodeError:
             return api_error(connection, "URL malformado.", 400, "MALFORMED_URL")
         
-        if filename_str.startswith('.'):
-            return api_error(connection, "Acceso a archivo de sistema no permitido.", 403, "FORBIDDEN_FILENAME")
-        if not is_filename_safe(filename_str):
-            return  api_error(connection, "Nombre de archivo invalido.", 400, "INVALID_FILENAME")
+        file_path, err = resolve_user_file_path(user_id, filename_str)
+        if err:
+            return api_error(connection, err[0], err[1], err[2])
 
-        file_path = os.path.join(STORAGE_DIR, filename_str)
-        if not os.path.exists(file_path):
+        if not file_path.is_file():
             return api_error(connection, f"El archivo '{filename_str}', no fue encontrado.", 404, "FILE_NOT_FOUND")
         
         try:
@@ -350,16 +420,18 @@ def python_request_handler(cls, connection, url, method, post_data, post_data_si
 
 
     elif url.startswith(b"/files/"):
-        filename_bytes = url.split(b"/")[-1]
-        filename_str = filename_bytes.decode('utf-8')
+        subpath = url[len(b"/files/"):]
+        if b"/" in subpath:
+            return api_error(connection, "Nombre de archivo invalido. No puede contener subdirectorios.", 400, "INVALID_FILENAME")
 
-        if filename_str.startswith('.'):
-            return api_error(connection, "Acceso a archivos de sistema no permitido", 403, "FORBIDDEN_FILENAME")
+        try:
+            filename_str = subpath.decode('utf-8')
+        except UnicodeDecodeError:
+            return api_error(connection, "URL malformado.", 400, "MALFORMED_URL")
 
-        if not is_filename_safe(filename_str):
-            return api_error(connection, "Nombre de archivo invalido. No puede contener '..' o '/'.", 400, "INVALID_FILENAME")
-
-        file_path = os.path.join(STORAGE_DIR, filename_str)
+        file_path, err = resolve_user_file_path(user_id, filename_str)
+        if err:
+            return api_error(connection, err[0], err[1], err[2])
 
         # ENDPOINT de Subida
         if method == b"POST":
@@ -370,10 +442,15 @@ def python_request_handler(cls, connection, url, method, post_data, post_data_si
                 data_to_encrypt = ffibuilder.unpack(post_data, post_data_size)
 
                 encrypted_buffer = C.encrypt_message(data_to_encrypt, len(data_to_encrypt), app_key)
-                encrypted_data = ffibuilder.unpack(encrypted_buffer.buffer, encrypted_buffer.len)
-                C.free_buffer(encrypted_buffer)
+                if encrypted_buffer.buffer == ffibuilder.NULL:
+                    return api_error(connection, "Fallo interno al cifrar el archivo.", 500, "ENCRYPTION_FAILED")
+
+                try:
+                    encrypted_data = ffibuilder.unpack(encrypted_buffer.buffer, encrypted_buffer.len)
+                finally:
+                    C.free_buffer(encrypted_buffer)
             
-                file_path = os.path.join(STORAGE_DIR, filename_str)
+                os.makedirs(file_path.parent, exist_ok=True)
                 try:
                     with open(file_path, "wb") as f:
                         f.write(encrypted_data)
@@ -389,8 +466,7 @@ def python_request_handler(cls, connection, url, method, post_data, post_data_si
         elif method == b"GET":
 
             logging.info(f"Iniciando descarga y descifrando el archivo: '{filename_str}'")
-            file_path = os.path.join(STORAGE_DIR, filename_str)
-            if not os.path.exists(file_path):
+            if not file_path.is_file():
                 return api_error(connection, f"El archivo '{filename_str}' no fue encontrado.", 404, "FILE_NOT_FOUND")
 
             try:
@@ -412,8 +488,7 @@ def python_request_handler(cls, connection, url, method, post_data, post_data_si
         
         #ENDPOINT de Eliminacion
         elif method == b"DELETE":
-            file_path = os.path.join(STORAGE_DIR, filename_str)
-            if not os.path.exists(file_path):
+            if not file_path.is_file():
                 return api_error(connection, f"El archivo '{filename_str}' no fue encontrado.", 404, "FILE_NOT_FOUND")
 
             try:
