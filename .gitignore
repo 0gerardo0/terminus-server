@@ -9,7 +9,13 @@ __pycache__/
 *.pyc
 
 # Virtual de Python
-venv/|
+venv/
 config.json
 client_config.json
 terminus.log
+terminus.db
+nvim.log
+
+# Documentación interna / Roadmap
+docs/ROADMAP.md
+ROADMAP.md
