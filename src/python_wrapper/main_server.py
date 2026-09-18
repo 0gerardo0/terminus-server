@@ -5,11 +5,24 @@ import time
 import logging
 from config import load_config
 from datetime import datetime
+import secrets
+from db import (
+    UserStore,
+    UsernameTakenError,
+    TokenCollisionError,
+    InvalidUsernameError,
+    InvalidPasswordError,
+    validate_username,
+    validate_password,
+    hash_token,
+)
 
 config = load_config()
 PORT = config["server_port"]
 STORAGE_DIR = config["storage_directory"]
 API_TOKEN = config["api_secret_token"]
+DB_PATH = config.get("database_path", "terminus.db")
+user_store = UserStore(DB_PATH)
 
 LOG_LEVEL = config.get("log_level", "INFO").upper()
 LOG_FILE = config.get("log_file", "terminus.log")
@@ -106,6 +119,23 @@ except OSError as e:
     exit(1)
 
 
+def hash_password_c(password: str) -> str:
+    pw_bytes = password.encode("utf-8")
+    buf = C.hash_password(pw_bytes, len(pw_bytes))
+    if buf.buffer == ffibuilder.NULL:
+        raise RuntimeError("Error al generar hash de contraseña con Argon2id")
+    try:
+        return ffibuilder.unpack(buf.buffer, buf.len).decode("utf-8")
+    finally:
+        C.free_buffer(buf)
+
+
+def verify_password_c(stored_hash: str, password: str) -> bool:
+    pw_bytes = password.encode("utf-8")
+    hash_bytes = stored_hash.encode("utf-8")
+    return C.verify_password(hash_bytes, pw_bytes, len(pw_bytes)) == 0
+
+
 def is_filename_safe(filename):
     return ".." not in filename and "/" not in filename
 
@@ -144,22 +174,7 @@ def python_request_handler(cls, connection, url, method, post_data, post_data_si
     url = ffibuilder.string(url)
     method = ffibuilder.string(method)
 
-    if not auth_header_ptr:
-        return api_error(connection, "Se requiere autenticacion", 401, "AUTH_REQUIRED")
-    
-    auth_header = ffibuilder.string(auth_header_ptr).decode('utf-8')
-    logging.debug(f"AUTH_HEADER recibido: {repr(auth_header)}")
-    logging.debug(f"API_TOKEN esperado: {repr(API_TOKEN)}")
-    
-    parts = auth_header.split()
-    logging.debug(f"Partes del header de autenticación: {parts}")
-    
-    if len(parts) != 2 or parts[0] != "Bearer" or parts[1] != API_TOKEN:
-        return api_error(connection, f"Token invalido o mal formado", 401, "TOKEN_INVALID")
-
-    
-    logging.info(f"Petición AUTENTICADA recibida: {method.decode("utf-8")} {url.decode("utf-8")}")
-    
+    # 1. Endpoint público: GET /status
     if method == b"GET" and url == b"/status":
         status_info = {
             "status": "ok",
@@ -167,6 +182,119 @@ def python_request_handler(cls, connection, url, method, post_data, post_data_si
         }
         json_response = json.dumps(status_info)
         return C.send_binary_response(connection, json_response.encode('utf-8'), len(json_response), b"application/json", 200)
+
+    # 2. Endpoint público: POST /auth/register
+    if method == b"POST" and url == b"/auth/register":
+        if post_data_size <= 0:
+            return api_error(connection, "Cuerpo de la petición vacío", 400, "EMPTY_BODY")
+        if post_data_size > 4096:
+            return api_error(connection, "Cuerpo de la petición excede el límite permitido", 413, "PAYLOAD_TOO_LARGE")
+
+        try:
+            raw_body = ffibuilder.unpack(post_data, post_data_size).decode('utf-8')
+            payload = json.loads(raw_body)
+        except Exception:
+            return api_error(connection, "JSON malformado", 400, "INVALID_JSON")
+
+        if not isinstance(payload, dict):
+            return api_error(connection, "JSON debe ser un objeto", 400, "INVALID_JSON")
+
+        username = payload.get("username")
+        password = payload.get("password")
+
+        try:
+            validate_username(username)
+            validate_password(password)
+        except (InvalidUsernameError, InvalidPasswordError) as e:
+            return api_error(connection, str(e), 400, "VALIDATION_ERROR")
+
+        try:
+            pw_hash = hash_password_c(password)
+            token = secrets.token_urlsafe(32)
+            token_hash = hash_token(token)
+            user_id = user_store.create_user(username, pw_hash, token_hash)
+        except UsernameTakenError:
+            return api_error(connection, f"El usuario '{username}' ya existe", 409, "USER_EXISTS")
+        except Exception as e:
+            logging.error(f"Error al registrar usuario: {e}")
+            return api_error(connection, "Error interno al crear usuario", 500, "INTERNAL_ERROR")
+
+        resp = {
+            "status": "ok",
+            "user_id": user_id,
+            "username": username,
+            "token": token
+        }
+        json_resp = json.dumps(resp)
+        return C.send_binary_response(connection, json_resp.encode('utf-8'), len(json_resp), b"application/json", 201)
+
+    # 3. Endpoint público: POST /auth/login
+    if method == b"POST" and url == b"/auth/login":
+        if post_data_size <= 0:
+            return api_error(connection, "Cuerpo de la petición vacío", 400, "EMPTY_BODY")
+        if post_data_size > 4096:
+            return api_error(connection, "Cuerpo de la petición excede el límite permitido", 413, "PAYLOAD_TOO_LARGE")
+
+        try:
+            raw_body = ffibuilder.unpack(post_data, post_data_size).decode('utf-8')
+            payload = json.loads(raw_body)
+        except Exception:
+            return api_error(connection, "JSON malformado", 400, "INVALID_JSON")
+
+        if not isinstance(payload, dict):
+            return api_error(connection, "JSON debe ser un objeto", 400, "INVALID_JSON")
+
+        username = payload.get("username")
+        password = payload.get("password")
+
+        if not username or not password or not isinstance(username, str) or not isinstance(password, str):
+            return api_error(connection, "Credenciales invalidas", 401, "INVALID_CREDENTIALS")
+
+        user = user_store.get_by_username(username)
+        if not user:
+            return api_error(connection, "Credenciales invalidas", 401, "INVALID_CREDENTIALS")
+
+        if not verify_password_c(user["password_hash"], password):
+            return api_error(connection, "Credenciales invalidas", 401, "INVALID_CREDENTIALS")
+
+        try:
+            new_token = secrets.token_urlsafe(32)
+            user_store.update_user_token(user["id"], hash_token(new_token))
+        except Exception as e:
+            logging.error(f"Error al actualizar token de login: {e}")
+            return api_error(connection, "Error interno al iniciar sesión", 500, "INTERNAL_ERROR")
+
+        resp = {
+            "status": "ok",
+            "user_id": user["id"],
+            "username": user["username"],
+            "token": new_token
+        }
+        json_resp = json.dumps(resp)
+        return C.send_binary_response(connection, json_resp.encode('utf-8'), len(json_resp), b"application/json", 200)
+
+    # --- RUTAS PROTEGIDAS (Requieren Token Bearer) ---
+    if not auth_header_ptr:
+        return api_error(connection, "Se requiere autenticacion", 401, "AUTH_REQUIRED")
+
+    auth_header = ffibuilder.string(auth_header_ptr).decode('utf-8')
+    parts = auth_header.split()
+    if len(parts) != 2 or parts[0] != "Bearer":
+        return api_error(connection, "Token invalido o mal formado", 401, "TOKEN_INVALID")
+
+    token_val = parts[1]
+    authenticated_user = None
+
+    user_row = user_store.get_by_token_hash(hash_token(token_val))
+    if user_row:
+        authenticated_user = user_row
+    elif secrets.compare_digest(token_val, API_TOKEN):
+        authenticated_user = {"id": 0, "username": "admin"}
+
+    if not authenticated_user:
+        return api_error(connection, "Token invalido o no autorizado", 401, "TOKEN_INVALID")
+
+    logging.info(f"Petición AUTENTICADA (usuario '{authenticated_user['username']}'): {method.decode('utf-8')} {url.decode('utf-8')}")
 
     #if method == b"POST" and url == b"/encrypt":
     #    if post_data_size > 0:
@@ -178,7 +306,7 @@ def python_request_handler(cls, connection, url, method, post_data, post_data_si
     #    else:
     #        return C.send_text_response(connection, b"Endpoint no encontrado.", 404)
     
-    elif method == b"GET" and url == b"/files":
+    if method == b"GET" and url == b"/files":
         logging.info("Solicitud recibida para listar archivos en el directorio de almacenamiento")
 
         if os.path.exists(STORAGE_DIR) and os.path.isdir(STORAGE_DIR):
@@ -305,7 +433,7 @@ app_key = ffibuilder.new("unsigned char[]", key_bytes)
 def main():
     global mhd_daemon 
     
-    logging.info(f"Clave de sesion generada: {bytes(app_key).hex()}")
+    logging.info("Clave de cifrado inicializada correctamente.")
 
     mhd_daemon = C.start_server(PORT, python_request_handler)
 
@@ -326,3 +454,4 @@ if __name__ == "__main__":
     finally:
         if mhd_daemon and mhd_daemon != ffibuilder.NULL:
             C.stop_server(mhd_daemon)
+        user_store.close()
