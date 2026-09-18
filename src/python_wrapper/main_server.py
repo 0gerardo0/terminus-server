@@ -22,9 +22,9 @@ from db import (
 
 config = load_config()
 PORT = config["server_port"]
-STORAGE_DIR = config["storage_directory"]
+STORAGE_DIR = os.environ.get("TERMINUS_STORAGE_DIR", config["storage_directory"])
 API_TOKEN = config["api_secret_token"]
-DB_PATH = config.get("database_path", "terminus.db")
+DB_PATH = os.environ.get("TERMINUS_DB_PATH", config.get("database_path", "terminus.db"))
 user_store = UserStore(DB_PATH)
 
 LOG_LEVEL = config.get("log_level", "INFO").upper()
